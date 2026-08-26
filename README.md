@@ -61,14 +61,18 @@ assert levenshtein("kitten", "sitting") == 3
 ## Benchmarks
 
 Measured by `pixi run bench` on Linux 6.8.0-136-generic, x86_64. Times are the
-best of three and compare the public API with an
-independent pure-Python affine dynamic-programming recurrence on the same
-900-by-900 ASCII sequences.
+best of 100 calls for the small cases and three calls for the large cases.
+They compare the public API with independent pure-Python affine and
+Levenshtein dynamic-programming recurrences on the same ASCII sequences.
 
 | case | mojo-pyseq | Python reference | result |
 | --- | ---: | ---: | --- |
-| NeedlemanWunsch.align (900 x 900) | 8.84 ms | 536.23 ms | 60.67x faster |
-| SmithWaterman.align (900 x 900) | 14.18 ms | 583.87 ms | 41.17x faster |
+| NeedlemanWunsch.align (7 x 7) | 34.16 us | 31.34 us | 1.09x slower |
+| SmithWaterman.align (7 x 7) | 38.89 us | 28.61 us | 1.36x slower |
+| levenshtein (7 x 7) | 5.76 us | 9.32 us | 1.62x faster |
+| NeedlemanWunsch.align (900 x 900) | 6.19 ms | 531.33 ms | 85.81x faster |
+| SmithWaterman.align (900 x 900) | 7.38 ms | 582.97 ms | 79.01x faster |
+| levenshtein (900 x 900) | 5.93 ms | 188.52 ms | 31.79x faster |
 
 Reproduce these numbers only through the flock-protected task:
 
@@ -81,18 +85,28 @@ pixi run bench
 `src/capi.mojo` is a single Mojo compilation unit containing the affine
 recurrences. Python validates ASCII input and bounded integer scores, encodes
 each sequence into a contiguous non-null `uint8` NumPy buffer, and allocates
-three row-major score matrices (`match`, gap-in-B, and gap-in-A). Ordinary
+one contiguous block viewed as three row-major score matrices (`match`,
+gap-in-B, and gap-in-A). Ordinary
 scoring uses `int32` matrices; a conservative range check selects the `int64`
 kernel for large scores. The ctypes boundary passes each buffer as an `Int`
 address because
 Mojo C exports cannot be parametric over pointer origin. The exported wrappers
 rebuild `UnsafePointer[..., AnyOrigin[mut=True]]` values, write only to
-caller-owned matrices, and make no allocations. Python performs the traceback,
+caller-owned matrices, and make no heap allocations. Python performs the traceback,
 which keeps the public objects idiomatic while leaving the quadratic,
 compute-bound recurrence in Mojo.
 
-The recurrence has a loop-carried dependency across each row. No SIMD,
-parallel, or GPU path is included.
+When the shorter Levenshtein input is at most 64 bytes, an allocation-free
+Myers bit-vector kernel updates 64 dynamic-programming columns per machine
+word. Its stack-resident byte-mask table is cleared with native-width SIMD
+stores and a remainder-safe scalar tail. Longer inputs retain the affine
+fallback.
+
+There is no threaded or GPU path. Affine cells depend on left, upper, and
+diagonal state, while Myers advances loop-carried bit-vector state. These
+kernels have under roughly two operations per byte of matrix traffic and no
+large independent dimension, so CPU thread-launch overhead and GPU transfers
+would outweigh useful work. A GPU path is therefore not justified.
 
 The test suite covers random-score parity against an independently written
 reference, published Needleman-Wunsch/Smith-Waterman-style vectors, each

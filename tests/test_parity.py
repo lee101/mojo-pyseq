@@ -126,6 +126,24 @@ def test_levenshtein(a, b, distance):
     assert levenshtein(a, b) == distance
 
 
+def test_levenshtein_word_tail_and_boundary_parity():
+    rng = random.Random(9)
+    for pattern_len in (1, 7, 15, 31, 63, 64):
+        a = "".join(rng.choice("ACGT") for _ in range(pattern_len))
+        b = "".join(rng.choice("ACGT") for _ in range(137))
+        assert levenshtein(a, b) == -NeedlemanWunsch(
+            match=0, mismatch=-1, gap_open=-1, gap_extend=-1).align(a, b).score
+        assert levenshtein(b, a) == levenshtein(a, b)
+
+
+def test_levenshtein_long_pattern_fallback_parity():
+    a = "ACGT" * 17
+    b = "AGGT" * 18
+    assert min(len(a), len(b)) > 64
+    assert levenshtein(a, b) == -NeedlemanWunsch(
+        match=0, mismatch=-1, gap_open=-1, gap_extend=-1).align(a, b).score
+
+
 def test_upstream_pyseq_is_installed_but_is_not_an_alignment_api():
     pyseq = pytest.importorskip("pyseq")
     assert hasattr(pyseq, "Sequence")

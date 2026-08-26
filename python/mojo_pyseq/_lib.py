@@ -39,5 +39,7 @@ def lib() -> ctypes.CDLL:
             fn = getattr(loaded, name)
             fn.argtypes = [I] * 11
             fn.restype = None
+        loaded.mps_levenshtein_word_u8.argtypes = [I] * 4
+        loaded.mps_levenshtein_word_u8.restype = I
         _lib = loaded
     return _lib

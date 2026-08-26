@@ -1,8 +1,43 @@
 """Pairwise-alignment dynamic-programming kernels exposed to Python."""
 
+from std.memory import stack_allocation
+from std.sys import simd_width_of as simdwidthof
+
 comptime BytePtr = UnsafePointer[UInt8, AnyOrigin[mut=True]]
 comptime ScorePtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
 comptime Score32Ptr = UnsafePointer[Int32, AnyOrigin[mut=True]]
+
+
+def levenshtein_word_u8(pattern: BytePtr, pattern_len: Int,
+                        text: BytePtr, text_len: Int) -> Int:
+    comptime W = simdwidthof[DType.float64]()
+    var masks = stack_allocation[256, UInt64]()
+    var zeros = SIMD[DType.uint64, W]()
+    var vector_end = 256 - 256 % W
+    for i in range(0, vector_end, W):
+        masks.store(i, zeros)
+    for i in range(vector_end, 256):
+        masks[i] = 0
+    for i in range(pattern_len):
+        masks[Int(pattern[i])] |= UInt64(1) << UInt64(i)
+
+    var positive = ~UInt64(0)
+    var negative = UInt64(0)
+    var top = UInt64(1) << UInt64(pattern_len - 1)
+    var score = pattern_len
+    for i in range(text_len):
+        var matches = masks[Int(text[i])]
+        var changed = (((matches & positive) + positive) ^ positive) | matches | negative
+        var positive_change = negative | ~(changed | positive)
+        var negative_change = changed & positive
+        var shifted_positive = (positive_change << 1) | UInt64(1)
+        positive = (negative_change << 1) | ~(changed | shifted_positive)
+        negative = changed & shifted_positive
+        if (positive_change & top) != 0:
+            score += 1
+        elif (negative_change & top) != 0:
+            score -= 1
+    return score
 
 
 def mx3(a: Int64, b: Int64, c: Int64) -> Int64:
@@ -183,3 +218,16 @@ def mps_local_affine(a: Int, b: Int, n: Int, m: Int, match_score: Int64,
                  match_score, mismatch, gap_open, gap_extend,
                  ScorePtr(unsafe_from_address=mat), ScorePtr(unsafe_from_address=ins),
                  ScorePtr(unsafe_from_address=dele))
+
+
+@export("mps_levenshtein_word_u8")
+def mps_levenshtein_word_u8(a: Int, n: Int, b: Int, m: Int) abi("C") -> Int:
+    if n == 0:
+        return m
+    if m == 0:
+        return n
+    if n <= m:
+        return levenshtein_word_u8(BytePtr(unsafe_from_address=a), n,
+                                   BytePtr(unsafe_from_address=b), m)
+    return levenshtein_word_u8(BytePtr(unsafe_from_address=b), m,
+                               BytePtr(unsafe_from_address=a), n)

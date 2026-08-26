@@ -107,15 +107,16 @@ def _simple(scoring: Scoring) -> bool:
             not scoring.no_gaps_in_a and not scoring.no_gaps_in_b and not scoring.no_mismatches)
 
 
-def _validate_problem(a: str, b: str, scoring: Scoring) -> None:
+def _validate_problem(a: str, b: str, scoring: Scoring, check_ascii: bool = True) -> None:
     """Reject scores that could overflow either DP implementation."""
     if not isinstance(a, str) or not isinstance(b, str):
         raise TypeError("sequences must be str")
-    try:
-        a.encode("ascii")
-        b.encode("ascii")
-    except UnicodeEncodeError as exc:
-        raise ValueError("Mojo kernels currently accept ASCII sequences") from exc
+    if check_ascii:
+        try:
+            a.encode("ascii")
+            b.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise ValueError("Mojo kernels currently accept ASCII sequences") from exc
     values = [scoring.match, scoring.mismatch, scoring.gap_open, scoring.gap_extend]
     if scoring.substitution_matrix is not None:
         values.extend(value for row in scoring.substitution_matrix.values() for value in row.values())
@@ -132,10 +133,10 @@ def _use_i32(a: str, b: str, scoring: Scoring) -> bool:
 
 def _mojo_matrices(a: str, b: str, scoring: Scoring, local: bool):
     aa, bb = _bytes(a), _bytes(b)
-    _validate_problem(a, b, scoring)
     shape = (len(a) + 1, len(b) + 1)
     dtype = np.int32 if _use_i32(a, b, scoring) else np.int64
-    mat, ins, dele = (np.empty(shape, dtype=dtype) for _ in range(3))
+    storage = np.empty((3, *shape), dtype=dtype)
+    mat, ins, dele = storage
     suffix = "_i32" if dtype == np.int32 else ""
     name = ("mps_local_affine" if local else "mps_global_affine") + suffix
     getattr(lib(), name)(int(aa.ctypes.data), int(bb.ctypes.data), len(a), len(b),
@@ -221,8 +222,9 @@ class NeedlemanWunsch:
 
     def align(self, a: str, b: str) -> Alignment:
         s = self.scoring
-        _validate_problem(a, b, s)
-        mat, ins, dele = _mojo_matrices(a, b, s, False) if _simple(s) else _python_matrices(a, b, s, False)
+        simple = _simple(s)
+        _validate_problem(a, b, s, not simple)
+        mat, ins, dele = _mojo_matrices(a, b, s, False) if simple else _python_matrices(a, b, s, False)
         n, m = len(a), len(b)
         if s.no_end_gap_penalty:
             candidates = [(i, m) for i in range(n + 1)] + [(n, j) for j in range(m + 1)]
@@ -240,8 +242,9 @@ class SmithWaterman(NeedlemanWunsch):
         if n not in (0, 1):
             raise NotImplementedError("only the best Smith-Waterman alignment is supported")
         s = self.scoring
-        _validate_problem(a, b, s)
-        mat, ins, dele = _mojo_matrices(a, b, s, True) if _simple(s) else _python_matrices(a, b, s, True)
+        simple = _simple(s)
+        _validate_problem(a, b, s, not simple)
+        mat, ins, dele = _mojo_matrices(a, b, s, True) if simple else _python_matrices(a, b, s, True)
         flat = np.maximum(np.maximum(mat, ins), dele)
         i, j = np.unravel_index(int(np.argmax(flat)), flat.shape)
         if int(flat[i, j]) == 0:
@@ -251,5 +254,11 @@ class SmithWaterman(NeedlemanWunsch):
 
 def levenshtein(a: str, b: str) -> int:
     """Return the unit-cost edit distance between two ASCII strings."""
+    if not isinstance(a, str) or not isinstance(b, str):
+        raise TypeError("sequences must be str")
+    if min(len(a), len(b)) <= 64:
+        aa, bb = _bytes(a), _bytes(b)
+        return int(lib().mps_levenshtein_word_u8(
+            int(aa.ctypes.data), len(a), int(bb.ctypes.data), len(b)))
     result = NeedlemanWunsch(match=0, mismatch=-1, gap_open=-1, gap_extend=-1).align(a, b)
     return -result.score
